@@ -83,8 +83,8 @@ namespace PsiBot.Services.Controllers
             }
             catch (ServiceException e)
             {
-                HttpResponseMessage response = (int)e.StatusCode >= 300
-                    ? new HttpResponseMessage(e.StatusCode)
+                HttpResponseMessage response = (int)e.ResponseStatusCode >= 300
+                    ? new HttpResponseMessage((HttpStatusCode)e.ResponseStatusCode)
                     : new HttpResponseMessage(HttpStatusCode.InternalServerError);
 
                 if (e.ResponseHeaders != null)

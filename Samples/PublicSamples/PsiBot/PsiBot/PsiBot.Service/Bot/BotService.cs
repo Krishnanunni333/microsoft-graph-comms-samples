@@ -26,6 +26,8 @@ using Microsoft.Extensions.Options;
 using System.Collections.Generic;
 using PsiBot.Model.Constants;
 using System.Linq;
+using Microsoft.Graph.Models;
+using Microsoft.Graph.Contracts;
 
 namespace PsiBot.Services.Bot
 {

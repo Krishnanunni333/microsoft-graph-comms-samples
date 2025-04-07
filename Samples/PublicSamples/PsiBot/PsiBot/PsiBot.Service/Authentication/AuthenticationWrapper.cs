@@ -3,7 +3,6 @@
 // Licensed under the MIT license.
 // </copyright>
 
-using Microsoft.Graph;
 using Microsoft.Graph.Communications.Client.Authentication;
 using Microsoft.Graph.Communications.Common;
 using System.Net.Http;
@@ -17,7 +16,7 @@ namespace PsiBot.Services.Authentication
     /// </summary>
     /// <seealso cref="IRequestAuthenticationProvider" />
     /// <seealso cref="IAuthenticationProvider" />
-    public class AuthenticationWrapper : IRequestAuthenticationProvider, IAuthenticationProvider
+    public class AuthenticationWrapper : IRequestAuthenticationProvider
     {
         /// <summary>
         /// The authentication provider

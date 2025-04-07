@@ -41,6 +41,7 @@ namespace Microsoft.Psi.TeamsBot
         private readonly Connector<Dictionary<string, (AudioBuffer, DateTime)>> audioInConnector;
         private readonly Connector<Dictionary<string, (Shared<PsiImage>, DateTime)>> videoInConnector;
         private readonly Connector<Shared<PsiImage>> screenShareOutConnector;
+        private readonly Connector<Shared<PsiImage>> videoOutConnector;
 
         private readonly TimeSpan speechWindow = TimeSpan.FromSeconds(5);
         private readonly Bitmap icon;
@@ -58,7 +59,9 @@ namespace Microsoft.Psi.TeamsBot
         /// <param name="interval">Interval at which to render and emit frames of the rendered visual.</param>
         /// <param name="screenWidth">Width at which to render the shared screen.</param>
         /// <param name="screenHeight">Height at which to render the shared screen.</param>
+#pragma warning disable CA1801 // Review unused parameters
         public ParticipantEngagementBotBase(Pipeline pipeline, TimeSpan interval, int screenWidth, int screenHeight)
+#pragma warning restore CA1801 // Review unused parameters
             : base(pipeline, "ParticipantEngagementBot")
         {
             if (pipeline == null)
@@ -74,6 +77,7 @@ namespace Microsoft.Psi.TeamsBot
             this.audioInConnector = this.CreateInputConnectorFrom<Dictionary<string, (AudioBuffer, DateTime)>>(pipeline, nameof(this.audioInConnector));
             this.videoInConnector = this.CreateInputConnectorFrom<Dictionary<string, (Shared<PsiImage>, DateTime)>>(pipeline, nameof(this.videoInConnector));
             this.screenShareOutConnector = this.CreateOutputConnectorTo<Shared<PsiImage>>(pipeline, nameof(this.screenShareOutConnector));
+            this.videoOutConnector = this.CreateOutputConnectorTo<Shared<PsiImage>>(pipeline, nameof(this.videoOutConnector));
 
             // Compute some simple voice activity detection over each participant's audio stream,
             // then aggregate over a window to get a list of timestamps within the window that each
@@ -158,6 +162,17 @@ namespace Microsoft.Psi.TeamsBot
             //
             // Note that a best effort is made to sync the video and speech streams with the
             // interval using relaxed Joins.
+            /*Generators
+                .Repeat(this, true, interval)
+                .Join(speech, RelativeTimeInterval.Infinite)
+                .Join(video, RelativeTimeInterval.Infinite, secondaryDeliveryPolicy: DeliveryPolicy.LatestMessage)
+                .Process<(bool, Dictionary<string, List<DateTime>>, Dictionary<string, Shared<PsiImage>>), Shared<PsiImage>>(
+                    (tuple, envelope, emitter) =>
+                    {
+                        this.ProduceScreenShare(tuple.Item3, tuple.Item2, envelope.OriginatingTime, emitter);
+                    },
+                    DeliveryPolicy.LatestMessage)
+                .PipeTo(this.screenShareOutConnector, DeliveryPolicy.LatestMessage);*/
             Generators
                 .Repeat(this, true, interval)
                 .Join(speech, RelativeTimeInterval.Infinite)
@@ -168,7 +183,7 @@ namespace Microsoft.Psi.TeamsBot
                         this.ProduceScreenShare(tuple.Item3, tuple.Item2, envelope.OriginatingTime, emitter);
                     },
                     DeliveryPolicy.LatestMessage)
-                .PipeTo(this.screenShareOutConnector, DeliveryPolicy.LatestMessage);
+                .PipeTo(this.videoOutConnector, DeliveryPolicy.LatestMessage);
         }
 
         /// <inheritdoc/>
@@ -178,7 +193,7 @@ namespace Microsoft.Psi.TeamsBot
         public Receiver<Dictionary<string, (AudioBuffer, DateTime)>> AudioIn => this.audioInConnector.In;
 
         /// <inheritdoc />
-        public bool EnableScreenSharing => true;
+        public bool EnableScreenSharing => false;
 
         /// <inheritdoc />
         public (int Width, int Height) ScreenShareSize => (this.ScreenWidth, this.ScreenHeight);
@@ -187,16 +202,17 @@ namespace Microsoft.Psi.TeamsBot
         public Emitter<Shared<PsiImage>> ScreenShareOut => this.screenShareOutConnector.Out;
 
         /// <inheritdoc />
-        public bool EnableVideoOutput => false;
+        public bool EnableVideoOutput => true;
 
         /// <inheritdoc />
         public (int Width, int Height) VideoSize => (this.ScreenWidth, this.ScreenHeight);
 
         /// <inheritdoc />
-        public Emitter<Shared<PsiImage>> VideoOut { get; } = null;
+        // public Emitter<Shared<PsiImage>> VideoOut { get; } = null;
+        public Emitter<Shared<PsiImage>> VideoOut => this.videoOutConnector.Out;
 
         /// <inheritdoc />
-        public bool EnableAudioOutput => false;
+        public bool EnableAudioOutput => true;
 
         /// <inheritdoc />
         public Emitter<AudioBuffer> AudioOut { get; } = null;

@@ -3,6 +3,7 @@
   <PropertyGroup>
     <TargetFrameworks>net48</TargetFrameworks>
     <RootNamespace>PsiBot.Services</RootNamespace>
+    <Platforms>AnyCPU;x64</Platforms>
   </PropertyGroup>
 
   <PropertyGroup>
@@ -13,7 +14,15 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(Configuration)|$(TargetFramework)|$(Platform)'=='Release|net48|x64'">
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
   <PropertyGroup Condition="'$(Configuration)|$(TargetFramework)|$(Platform)'=='Debug|net48|AnyCPU'">
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(TargetFramework)|$(Platform)'=='Debug|net48|x64'">
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
@@ -31,15 +40,15 @@
     <PackageReference Include="Microsoft.AspNetCore" Version="2.2.0" />
     <PackageReference Include="Microsoft.AspNetCore.HttpsPolicy" Version="2.2.0" />
     <PackageReference Include="Microsoft.AspNetCore.Mvc" Version="2.2.0" />
-    <PackageReference Include="Microsoft.Graph.Communications.Calls" Version="1.2.0.850" />
-    <PackageReference Include="Microsoft.Graph.Communications.Client" Version="1.2.0.850" />
-    <PackageReference Include="Microsoft.Graph.Communications.Common" Version="1.2.0.850" />
-    <PackageReference Include="Microsoft.Graph.Communications.Core" Version="1.2.0.850" />
+    <PackageReference Include="Microsoft.Graph" Version="5.38.0" />
+    <PackageReference Include="Microsoft.Graph.Communications.Calls" Version="1.2.0.10563" />
+    <PackageReference Include="Microsoft.Graph.Communications.Calls.Media" Version="1.2.0.10563" />
+    <PackageReference Include="Microsoft.Graph.Communications.Client" Version="1.2.0.10563" />
+    <PackageReference Include="Microsoft.Graph.Communications.Common" Version="1.2.0.10563" />
     <PackageReference Include="Microsoft.IdentityModel.Clients.ActiveDirectory" Version="5.2.4" />
     <PackageReference Include="Microsoft.IdentityModel.Protocols.OpenIdConnect" Version="8.0.1" />
-    <PackageReference Include="Microsoft.Psi.Imaging.Windows" Version="0.15.49.1-beta" />
-    <PackageReference Include="Microsoft.Skype.Bots.Media" Version="1.19.0.25-alpha" />
-    <PackageReference Include="Microsoft.Graph.Communications.Calls.Media" Version="1.2.0.850" />
+    <PackageReference Include="Microsoft.Psi.Imaging.Windows" Version="0.19.100.1-beta" />
+    <PackageReference Include="Microsoft.Skype.Bots.Media" Version="1.30.0.19-preview" />
   </ItemGroup>
 
   <ItemGroup>

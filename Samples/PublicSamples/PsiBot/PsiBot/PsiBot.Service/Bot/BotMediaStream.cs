@@ -79,9 +79,9 @@ namespace PsiBot.Services.Bot
         private readonly IGraphLogger logger;
         private readonly MediaFrameSourceComponent mediaFrameSourceComponent;
         private int shutdown;
-        private MediaSendStatus videoMediaSendStatus = MediaSendStatus.Inactive;
+        private MediaSendStatus videoMediaSendStatus = MediaSendStatus.Active;
         private MediaSendStatus vbssMediaSendStatus = MediaSendStatus.Inactive;
-        private MediaSendStatus audioSendStatus = MediaSendStatus.Inactive;
+        private MediaSendStatus audioSendStatus = MediaSendStatus.Active;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="BotMediaStream"/> class.
@@ -186,7 +186,7 @@ namespace PsiBot.Services.Bot
                 },
                 DeliveryPolicy.LatestMessage);
 
-            teamsBot.ScreenShareOut?.Do(
+           /* teamsBot.ScreenShareOut?.Do(
                 frame =>
                 {
                     if (this.vbssMediaSendStatus == MediaSendStatus.Active && teamsBot.EnableScreenSharing)
@@ -197,7 +197,7 @@ namespace PsiBot.Services.Bot
                         this.SendScreen(new VideoSendBuffer(nv12, (uint)nv12.Length, format));
                     }
                 },
-                DeliveryPolicy.LatestMessage);
+                DeliveryPolicy.LatestMessage);*/
 
             // Subscribe to the audio media.
             this.audioSocket = this.mediaSession.AudioSocket;

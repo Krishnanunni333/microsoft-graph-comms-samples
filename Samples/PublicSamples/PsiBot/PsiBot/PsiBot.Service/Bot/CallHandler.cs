@@ -20,6 +20,7 @@ using Microsoft.Skype.Bots.Media;
 using Microsoft.Psi;
 using Microsoft.Psi.Data;
 using Microsoft.Psi.TeamsBot;
+using Microsoft.Graph.Models;
 
 namespace PsiBot.Services.Bot
 {
@@ -305,9 +306,9 @@ namespace PsiBot.Services.Bot
 
             if (identity == null &&
                 identitySet != null &&
-                identitySet.AdditionalData.Any(kvp => kvp.Value is Microsoft.Graph.Identity))
+                identitySet.AdditionalData.Any(kvp => kvp.Value is Identity))
             {
-                identity = identitySet.AdditionalData.Values.First(v => v is Microsoft.Graph.Identity) as Microsoft.Graph.Identity;
+                identity = identitySet.AdditionalData.Values.First(v => v is Identity) as Identity;
             }
 
             return identity;
