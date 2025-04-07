@@ -169,9 +169,9 @@ namespace PsiBot.Services.Bot
                     IntPtr unmanagedPointer = Marshal.AllocHGlobal(buffer.Length);
                     Marshal.Copy(buffer.Data, 0, unmanagedPointer, buffer.Length);
                     this.SendAudio(new AudioSendBuffer(unmanagedPointer, buffer.Length, AudioFormat.Pcm16K));
-                    Marshal.FreeHGlobal(unmanagedPointer);
+                    //Marshal.FreeHGlobal(unmanagedPointer);
                 }
-            });
+            } );
 
             teamsBot.VideoOut?.Do(
                 frame =>

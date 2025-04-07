@@ -42,6 +42,7 @@ namespace Microsoft.Psi.TeamsBot
         private readonly Connector<Dictionary<string, (Shared<PsiImage>, DateTime)>> videoInConnector;
         private readonly Connector<Shared<PsiImage>> screenShareOutConnector;
         private readonly Connector<Shared<PsiImage>> videoOutConnector;
+        private readonly Connector<AudioBuffer> audioOutConnector;
 
         private readonly TimeSpan speechWindow = TimeSpan.FromSeconds(5);
         private readonly Bitmap icon;
@@ -78,6 +79,7 @@ namespace Microsoft.Psi.TeamsBot
             this.videoInConnector = this.CreateInputConnectorFrom<Dictionary<string, (Shared<PsiImage>, DateTime)>>(pipeline, nameof(this.videoInConnector));
             this.screenShareOutConnector = this.CreateOutputConnectorTo<Shared<PsiImage>>(pipeline, nameof(this.screenShareOutConnector));
             this.videoOutConnector = this.CreateOutputConnectorTo<Shared<PsiImage>>(pipeline, nameof(this.videoOutConnector));
+            this.audioOutConnector = this.CreateOutputConnectorTo<AudioBuffer>(pipeline, nameof(this.audioOutConnector));
 
             // Compute some simple voice activity detection over each participant's audio stream,
             // then aggregate over a window to get a list of timestamps within the window that each
@@ -157,6 +159,23 @@ namespace Microsoft.Psi.TeamsBot
 
                     return aggregate;
                 });
+            var firstParticipantAudio = this.audioInConnector
+            .Select(dict => dict.Values.FirstOrDefault().Item1) // Get the AudioBuffer
+            .Where(audio => audio.Length > 0);                  // Ensure it's not null
+
+            // Pipe this internal audio stream TO the audio output connector
+            firstParticipantAudio.PipeTo(this.audioOutConnector, DeliveryPolicy.LatestMessage);
+            Generators
+               .Repeat(this, true, interval)
+               .Join(speech, RelativeTimeInterval.Infinite)
+               .Join(video, RelativeTimeInterval.Infinite, secondaryDeliveryPolicy: DeliveryPolicy.LatestMessage)
+               .Process<(bool, Dictionary<string, List<DateTime>>, Dictionary<string, Shared<PsiImage>>), Shared<PsiImage>>(
+                   (tuple, envelope, emitter) =>
+                   {
+                       this.ProduceScreenShare(tuple.Item3, tuple.Item2, envelope.OriginatingTime, emitter);
+                   },
+                   DeliveryPolicy.LatestMessage)
+               .PipeTo(this.videoOutConnector, DeliveryPolicy.LatestMessage);
 
             // Generate screen share frames on a regular clock.
             //
@@ -173,17 +192,6 @@ namespace Microsoft.Psi.TeamsBot
                     },
                     DeliveryPolicy.LatestMessage)
                 .PipeTo(this.screenShareOutConnector, DeliveryPolicy.LatestMessage);*/
-            Generators
-                .Repeat(this, true, interval)
-                .Join(speech, RelativeTimeInterval.Infinite)
-                .Join(video, RelativeTimeInterval.Infinite, secondaryDeliveryPolicy: DeliveryPolicy.LatestMessage)
-                .Process<(bool, Dictionary<string, List<DateTime>>, Dictionary<string, Shared<PsiImage>>), Shared<PsiImage>>(
-                    (tuple, envelope, emitter) =>
-                    {
-                        this.ProduceScreenShare(tuple.Item3, tuple.Item2, envelope.OriginatingTime, emitter);
-                    },
-                    DeliveryPolicy.LatestMessage)
-                .PipeTo(this.videoOutConnector, DeliveryPolicy.LatestMessage);
         }
 
         /// <inheritdoc/>
@@ -215,7 +223,7 @@ namespace Microsoft.Psi.TeamsBot
         public bool EnableAudioOutput => true;
 
         /// <inheritdoc />
-        public Emitter<AudioBuffer> AudioOut { get; } = null;
+        public Emitter<AudioBuffer> AudioOut => this.audioOutConnector.Out;
 
         /// <summary>
         /// Gets hilight color used for video frames and other colored elements.
