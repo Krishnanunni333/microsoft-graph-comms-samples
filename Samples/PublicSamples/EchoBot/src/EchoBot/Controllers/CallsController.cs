@@ -20,8 +20,8 @@ using System.Net;
 
 namespace EchoBot.Controllers
 {
-    [ApiController]
     [Route("[controller]")]
+    [ApiController]
     public class CallsController : ControllerBase
     {
         private readonly ILogger<CallsController> _logger;

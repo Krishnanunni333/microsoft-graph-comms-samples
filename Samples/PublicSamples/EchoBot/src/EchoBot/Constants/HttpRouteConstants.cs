@@ -43,7 +43,7 @@ namespace EchoBot.Constants
         /// <summary>
         /// The route for join call.
         /// </summary>
-        public const string JoinCall = "joinCall";
+        public const string JoinCall = "joincall";
 
         /// <summary>
         /// Route for incoming call requests.
