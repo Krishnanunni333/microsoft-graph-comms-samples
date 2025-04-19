@@ -1,82 +1,101 @@
 ﻿// ***********************************************************************
-// Assembly         : EchoBot.Services
-// Author           : JasonTheDeveloper (Modified for Redis)
-// Created          : 09-07-2020
+// Assembly          : EchoBot.Services
+// Author            : Krishnanunni (Modified for Redis)
+// Created           : 09-07-2020
 //
-// Last Modified By : Gemini
-// Last Modified On : 2025-04-15
+// Last Modified By  : Krishnanunni
+// Last Modified On  : 2025-04-17 // Adjusted date
 // ***********************************************************************
 // <copyright file="BotMediaStream.cs" company="Microsoft Corporation">
 //     Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT license.
 // </copyright>
-// <summary>The bot media stream modified to play audio from Redis.</summary>
+// <summary>The bot media stream modified to play audio and video from Redis.</summary>
 // ***********************************************************************-
-using EchoBot.Util; // Assuming AppSettings and Utilities are here
-using EchoBot.Media;
+using EchoBot.Util;
+using EchoBot.Media; 
 using Microsoft.Graph.Communications.Calls;
 using Microsoft.Graph.Communications.Calls.Media;
 using Microsoft.Graph.Communications.Common;
 using Microsoft.Graph.Communications.Common.Telemetry;
-using Microsoft.Skype.Bots.Media; // Required for AudioVideoFramePlayer, AudioMediaBuffer etc.
+using Microsoft.Skype.Bots.Media; 
 using StackExchange.Redis;
-using System; // Added for Exception, TimeSpan, DateTime, GC, etc.
-using System.Collections.Generic; // Added for List<>
-using System.Linq; // Added for .Any()
-using System.Threading; // Added for Interlocked
-using System.Threading.Tasks; // Added for Task, TaskCompletionSource
+using System; 
+using System.Collections.Generic; 
+using System.Linq;
+using System.Threading; 
+using System.Threading.Tasks; 
 
 // Ensure you have a using directive for your logger implementation (e.g., Microsoft.Extensions.Logging)
 using Microsoft.Extensions.Logging;
-using Microsoft.Skype.Internal.Media.Services.Common; // Example if using Microsoft.Extensions.Logging
+using System.Runtime.InteropServices;
+using Microsoft.Skype.Internal.Media.Services.Common; // Needed for GCHandle/Marshal if used in Utilities
+// using Microsoft.Skype.Internal.Media.Services.Common; // Likely not needed
 
 namespace EchoBot.Bot
 {
     /// <summary>
-    /// Class responsible for streaming audio received from a Redis channel.
+    /// Class responsible for streaming audio and video received from Redis channels.
     /// </summary>
     public class BotMediaStream : ObjectRootDisposable
     {
-        /// <summary>
-        /// The participants
-        /// </summary>
+        // Re-added participants list as per user's last code block
         internal List<IParticipant> participants;
+        private readonly IAudioSocket _audioSocket;
+        private readonly IVideoSocket _mainVideoSocket; // Make nullable explicit
 
         /// <summary>
-        /// The audio socket
+        /// Contains a map from simple color/width/height combinations to VideoFormat objects.
         /// </summary>
-        private readonly IAudioSocket _audioSocket;
-        /// <summary>
-        /// The media stream
-        /// </summary>
+        public static readonly Dictionary<(VideoColorFormat format, int width, int height), VideoFormat> VideoFormatMap = new Dictionary<(VideoColorFormat format, int width, int height), VideoFormat>()
+        {
+             { (VideoColorFormat.NV12, 1920, 1080), VideoFormat.NV12_1920x1080_15Fps },
+             { (VideoColorFormat.NV12, 1280, 720), VideoFormat.NV12_1280x720_15Fps },
+             { (VideoColorFormat.NV12, 640, 360), VideoFormat.NV12_640x360_15Fps },
+             { (VideoColorFormat.NV12, 480, 270), VideoFormat.NV12_480x270_15Fps },
+             { (VideoColorFormat.NV12, 424, 240), VideoFormat.NV12_424x240_15Fps },
+             { (VideoColorFormat.NV12, 360, 640), VideoFormat.NV12_360x640_15Fps },
+             { (VideoColorFormat.NV12, 320, 180), VideoFormat.NV12_320x180_15Fps },
+             { (VideoColorFormat.NV12, 270, 480), VideoFormat.NV12_270x480_15Fps },
+             { (VideoColorFormat.NV12, 240, 424), VideoFormat.NV12_240x424_15Fps },
+             { (VideoColorFormat.NV12, 180, 320), VideoFormat.NV12_180x320_30Fps },
+        };
         private readonly AppSettings _settings;
         private readonly ILogger _logger;
         private AudioVideoFramePlayer _audioVideoFramePlayer;
         private readonly TaskCompletionSource<bool> _audioSendStatusActive;
+        private readonly TaskCompletionSource<bool> _videoSendStatusActive;
         private readonly TaskCompletionSource<bool> _startAVPlayerCompleted;
         private AudioVideoFramePlayerSettings _audioVideoFramePlayerSettings;
         private int _shutdown;
+        private List<AudioMediaBuffer> _audioMediaBuffers = new List<AudioMediaBuffer>();
+        private List<VideoMediaBuffer> _videoMediaBuffers = new List<VideoMediaBuffer>();
 
         // --- Redis Members ---
         private ConnectionMultiplexer _redisConnection;
         private ISubscriber _redisSubscriber;
-        private const string RedisChannelName = "audio_stream"; // Must match Python script's channel
-        private long _lastRedisAudioTimestamp = -1; // For generating timestamps
+        private const string RedisAudioChannelName = "audio_stream";
+        private const string RedisVideoChannelName = "video_stream";
+        private long _lastRedisAudioTimestamp = -1;
         private const long TicksPerMs = TimeSpan.TicksPerMillisecond;
-        private const int AudioChunkDurationMs = 20; // Must match Python script's chunk duration
+        private const int AudioChunkDurationMs = 20;
+        private long audioTick;
+        private long videoTick;
+        private long mediaTick;
+        private readonly object mLock = new object();
 
         /// <summary>
         /// Initializes a new instance of the <see cref="BotMediaStream" /> class.
-        /// Connects to Redis and prepares to play audio from the specified channel.
+        /// Connects to Redis and prepares to play audio/video from the specified channels.
         /// </summary>
         public BotMediaStream(
             ILocalMediaSession mediaSession,
-            string callId, // Although callId is passed, it's not explicitly used in this simplified version
+            string callId,
             IGraphLogger graphLogger,
-            ILogger logger, // Ensure this logger is compatible with LogInformation, LogError etc.
+            ILogger logger,
             AppSettings settings
         )
-            : base(graphLogger) // Pass the GraphLogger to the base class
+            : base(graphLogger)
         {
             ArgumentVerifier.ThrowOnNullArgument(mediaSession, nameof(mediaSession));
             ArgumentVerifier.ThrowOnNullArgument(logger, nameof(logger));
@@ -84,30 +103,31 @@ namespace EchoBot.Bot
 
             _settings = settings;
             _logger = logger;
+            // Use RunContinuationsAsynchronously for TaskCompletionSource
             _audioSendStatusActive = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _videoSendStatusActive = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             _startAVPlayerCompleted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-            // Subscribe to the audio socket. Required for sending audio.
+            // Initialize participants list (if needed)
+            this.participants = new List<IParticipant>();
+
             this._audioSocket = mediaSession.AudioSocket;
             if (this._audioSocket == null)
             {
                 _logger.LogError("Media session does not have an audio socket.");
                 throw new InvalidOperationException("A mediaSession needs to have at least an audioSocket to send audio.");
             }
-
-            // Start the process of creating the AudioVideo frame player
-            // We need the player to be ready before we can enqueue buffers
-            var ignoreTask = this.StartAudioVideoFramePlayerAsync().ForgetAndLogExceptionAsync(this.GraphLogger, "Failed to start the AV player");
-
-            // Subscribe ONLY to the AudioSendStatusChanged event.
-            // We need this to know when the media platform is ready to receive audio buffers.
             this._audioSocket.AudioSendStatusChanged += OnAudioSendStatusChanged;
 
-            // *** DO NOT SUBSCRIBE TO AudioMediaReceived ***
-            // This prevents the bot from receiving (and looping back) the caller's audio.
-            // this._audioSocket.AudioMediaReceived += this.OnAudioMediaReceived; // <-- REMOVED / COMMENTED OUT
 
-            // Initialize connection to Redis
+            this._mainVideoSocket = mediaSession.VideoSockets?.FirstOrDefault();
+            if (this._mainVideoSocket != null)
+            {
+                _logger.LogInformation("Video socket found. Subscribing to video events.");
+                this._mainVideoSocket.VideoSendStatusChanged += this.OnVideoSendStatusChanged;
+                this._mainVideoSocket.VideoKeyFrameNeeded += this.OnVideoKeyFrameNeeded;
+            }
+           
             InitializeRedis();
         }
 
@@ -116,11 +136,7 @@ namespace EchoBot.Bot
         /// </summary>
         public async Task ShutdownAsync()
         {
-            // Ensure shutdown logic runs only once
-            if (Interlocked.CompareExchange(ref this._shutdown, 1, 0) == 1)
-            {
-                return;
-            }
+            if (Interlocked.CompareExchange(ref this._shutdown, 1, 0) == 1) return;
 
             _logger.LogInformation("[BotMediaStream] Initiating shutdown...");
 
@@ -129,9 +145,10 @@ namespace EchoBot.Bot
             {
                 try
                 {
-                    _logger.LogInformation($"[BotMediaStream] Unsubscribing from Redis channel: {RedisChannelName}");
+                    _logger.LogInformation($"[BotMediaStream] Unsubscribing from Redis channels: {RedisAudioChannelName} and {RedisVideoChannelName}");
                     // Use ConfigureAwait(false) to avoid deadlocks in certain contexts
-                    await _redisSubscriber.UnsubscribeAsync(RedisChannelName).ConfigureAwait(false);
+                    await _redisSubscriber.UnsubscribeAsync(RedisAudioChannelName).ConfigureAwait(false);
+                    await _redisSubscriber.UnsubscribeAsync(RedisVideoChannelName).ConfigureAwait(false);
                     _redisSubscriber = null; // Release the reference
                 }
                 catch (Exception ex)
@@ -153,10 +170,9 @@ namespace EchoBot.Bot
                     _logger.LogError(ex, "[BotMediaStream] Error during Redis connection close/dispose.");
                 }
             }
-            // --- End Redis Cleanup ---
 
             // Wait for the player to have been created before trying to shut it down
-            await this._startAVPlayerCompleted.Task.ConfigureAwait(false);
+            //await this._startAVPlayerCompleted.Task.ConfigureAwait(false);
 
             // Unsubscribe from the socket event
             if (this._audioSocket != null)
@@ -164,6 +180,12 @@ namespace EchoBot.Bot
                 this._audioSocket.AudioSendStatusChanged -= this.OnAudioSendStatusChanged;
             }
 
+            // Unsubscribe from the video socket event
+            if (this._mainVideoSocket != null)
+            {
+                this._mainVideoSocket.VideoKeyFrameNeeded -= this.OnVideoKeyFrameNeeded;
+                this._mainVideoSocket.VideoSendStatusChanged -= this.OnVideoSendStatusChanged;
+            }
             // Shut down the media player
             if (this._audioVideoFramePlayer != null)
             {
@@ -174,45 +196,25 @@ namespace EchoBot.Bot
 
             _logger.LogInformation("[BotMediaStream] Shutdown completed.");
 
+            foreach (var audioMediaBuffer in this._audioMediaBuffers)
+            {
+                audioMediaBuffer.Dispose();
+            }
+
+            _logger.LogInformation($"disposed {this._audioMediaBuffers.Count} audioMediaBUffers.");
+            foreach (var videoMediaBuffer in this._videoMediaBuffers)
+            {
+                videoMediaBuffer.Dispose();
+            }
+            this._audioMediaBuffers.Clear();
+            this._videoMediaBuffers.Clear();
             // Dispose base class resources
             base.Dispose(true); // Assuming true indicates disposing managed resources
             GC.SuppressFinalize(this); // Prevent finalizer from running
+
         }
 
-        /// <summary>
-        /// Initializes the AudioVideoFramePlayer used to send audio buffers.
-        /// </summary>
-        private async Task StartAudioVideoFramePlayerAsync()
-        {
-            try
-            {
-                _logger.LogInformation("[BotMediaStream] Creating the audio/video frame player.");
-                // Settings for the player - primarily audio settings needed here.
-                // AudioSettings(20) likely refers to 20ms buffer duration.
-                this._audioVideoFramePlayerSettings = new AudioVideoFramePlayerSettings(new AudioSettings(20), new VideoSettings(), 1000);
-
-                // Create the player instance, linking it to the audio socket.
-                // We pass null for the video socket as we're only dealing with audio.
-                this._audioVideoFramePlayer = new AudioVideoFramePlayer(
-                    (AudioSocket)_audioSocket, // Cast may be necessary depending on exact type
-                    null, // No video socket
-                    this._audioVideoFramePlayerSettings);
-
-                _logger.LogInformation("[BotMediaStream] Audio/video frame player created successfully.");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "[BotMediaStream] Failed to create the AudioVideoFramePlayer.");
-                // Signal completion even on failure to prevent deadlocks waiting for it
-                this._startAVPlayerCompleted.TrySetException(ex);
-                return; // Exit if creation failed
-            }
-            finally
-            {
-                // Signal that the player creation process (success or fail) is complete.
-                this._startAVPlayerCompleted.TrySetResult(true);
-            }
-        }
+        
 
         /// <summary>
         /// Handles changes in the audio send status from the media platform.
@@ -236,6 +238,20 @@ namespace EchoBot.Bot
             }
         }
 
+        private void OnVideoSendStatusChanged(object? sender, VideoSendStatusChangedEventArgs e)
+        {
+            _logger.LogInformation($"[BotMediaStream] VideoSendStatus changed to {e.MediaSendStatus}. Preferred Format: {e.PreferredVideoSourceFormat}");
+            if (e.MediaSendStatus == MediaSendStatus.Active)
+            {
+                this._videoSendStatusActive.TrySetResult(true);
+            }
+            else if (e.MediaSendStatus == MediaSendStatus.Inactive)
+            {
+                _logger.LogWarning("[BotMediaStream] VideoSendStatus is Inactive.");
+                this._videoSendStatusActive.TrySetException(new InvalidOperationException("VideoSendStatus became Inactive."));
+            }
+        }
+
         /// <summary>
         /// Establishes the connection to the Redis server.
         /// </summary>
@@ -243,9 +259,17 @@ namespace EchoBot.Bot
         {
             try
             {
-                // Get connection string from settings, fallback to localhost default
+                // Ensure existing connection is cleaned up if called again (unlikely but safe)
+                if (_redisConnection != null)
+                {
+                    _logger.LogWarning("[BotMediaStream] InitializeRedisConnection called with existing connection. Disposing old one.");
+                    _redisConnection.Close(false);
+                    _redisConnection.Dispose();
+                    _redisConnection = null;
+                }
+
                 string redisConnectionString = _settings.RedisConnectionString ?? "localhost:6379,abortConnect=False,connectTimeout=30000,responseTimeout=30000";
-                _logger.LogInformation($"[BotMediaStream] Connecting to Redis: {redisConnectionString}");
+                _logger.LogInformation($"[BotMediaStream] Attempting to connect to Redis: {redisConnectionString.Split(',')[0]}...");
 
                 var options = ConfigurationOptions.Parse(redisConnectionString);
                 options.AbortOnConnectFail = false; // Don't throw immediately if connection fails
@@ -261,7 +285,7 @@ namespace EchoBot.Bot
                 _redisConnection.ConnectionRestored += (sender, args) => {
                     _logger.LogInformation($"[BotMediaStream] Redis connection restored: {args.FailureType}, Endpoint: {args.EndPoint}");
                     // Re-subscribe when connection is restored
-                    SubscribeToAudioChannel();
+                    SubscribeToChannels();
                 };
                 _redisConnection.ErrorMessage += (sender, args) => {
                     _logger.LogError($"[BotMediaStream] Redis error message: {args.Message}");
@@ -269,185 +293,207 @@ namespace EchoBot.Bot
 
                 if (_redisConnection.IsConnected)
                 {
-                    _logger.LogInformation("[BotMediaStream] Successfully connected to Redis.");
-                    SubscribeToAudioChannel(); // Subscribe after successful connection
+                    _logger.LogInformation("[BotMediaStream] Successfully established initial Redis connection.");
+                    SubscribeToChannels();
                 }
                 else
                 {
-                    _logger.LogWarning("[BotMediaStream] Initial Redis connection failed. Will attempt to reconnect automatically.");
-                    // StackExchange.Redis handles reconnection automatically
+                    _logger.LogWarning("[BotMediaStream] Initial Redis connection failed. Background reconnection attempts will start.");
                 }
             }
-            catch (RedisConnectionException ex)
+            catch (Exception ex)
             {
-                _logger.LogError(ex, "[BotMediaStream] Failed to establish initial Redis connection.");
-            }
-            catch (Exception ex) // Catch broader exceptions during init
-            {
-                _logger.LogError(ex, "[BotMediaStream] An unexpected error occurred during Redis initialization.");
+                _logger.LogError(ex, "[BotMediaStream] An unexpected error occurred during Redis connection initialization.");
             }
         }
 
         /// <summary>
-        /// Subscribes to the specified Redis channel to receive audio chunks.
+        /// Subscribes to the necessary Redis channels using the existing subscriber.
         /// </summary>
-        private void SubscribeToAudioChannel()
+        private void SubscribeToChannels()
         {
             if (_redisConnection == null || !_redisConnection.IsConnected)
             {
                 _logger.LogWarning("[BotMediaStream] Cannot subscribe, Redis connection is not available.");
                 return;
             }
-
             // Avoid re-subscribing if already subscribed
-            if (_redisSubscriber != null && _redisSubscriber.IsConnected(RedisChannelName))
+            if (_redisSubscriber != null && _redisSubscriber.IsConnected(RedisVideoChannelName) && _redisSubscriber.IsConnected(RedisAudioChannelName))
             {
-                _logger.LogInformation($"[BotMediaStream] Already subscribed to Redis channel: {RedisChannelName}");
+                _logger.LogInformation($"[BotMediaStream] Already subscribed to Redis channel: {RedisAudioChannelName}, {RedisVideoChannelName}");
                 return;
             }
 
-            try
+                try
             {
                 _redisSubscriber = _redisConnection.GetSubscriber();
 
                 // Subscribe to the channel, directing messages to OnRedisAudioReceived
                 // Use SubscribeAsync for consistency, although fire-and-forget is often acceptable here.
-                _redisSubscriber.Subscribe(RedisChannelName, OnRedisAudioReceived); // Simple sync-over-async subscribe
+                _redisSubscriber.Subscribe(RedisAudioChannelName, OnRedisAudioReceived); // Simple sync-over-async subscribe
 
-                _logger.LogInformation($"[BotMediaStream] Subscribed to Redis channel: {RedisChannelName}");
+                _logger.LogInformation($"[BotMediaStream] Subscribed to Redis channel: {RedisAudioChannelName}");
+
+                _redisSubscriber.Subscribe(RedisVideoChannelName, OnRedisVideoReceived); // Simple sync-over-async subscribe
+
+                _logger.LogInformation($"[BotMediaStream] Subscribed to Redis channel: {RedisVideoChannelName}");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"[BotMediaStream] Failed to subscribe to Redis channel {RedisChannelName}.");
+                _logger.LogError(ex, $"[BotMediaStream] Failed to subscribe to Redis channels.");
             }
         }
 
-        /// <summary>
-        /// Handles audio chunk messages received from the Redis channel.
-        /// Creates AudioMediaBuffers and enqueues them for playback.
-        /// </summary>
-        private async void OnRedisAudioReceived(RedisChannel channel, RedisValue message)
+
+        private async void OnRedisVideoReceived(RedisChannel channel, RedisValue message)
         {
-            // If shutdown has started, ignore incoming messages
             if (this._shutdown == 1) return;
 
             try
             {
-                if (!message.HasValue || message.IsNullOrEmpty)
+                if (!message.HasValue || message.IsNullOrEmpty) return;
+                byte[] videoChunk = (byte[])message;
+                if (videoChunk.Length <= 3 && System.Text.Encoding.UTF8.GetString(videoChunk) == "EOS")
                 {
-                    _logger.LogWarning("[BotMediaStream] Received empty message from Redis.");
+                    _logger.LogInformation("[BotMediaStream] Received video EOS marker.");
                     return;
                 }
-
-                byte[] audioChunk = (byte[])message; // Cast RedisValue to byte array
-
-                // Check for End-of-Stream (EOS) marker sent by the Python script
-                if (audioChunk.Length <= 3 && System.Text.Encoding.UTF8.GetString(audioChunk) == "EOS")
-                {
-                    _logger.LogInformation("[BotMediaStream] Received EOS marker from Redis. Playback complete.");
-                    // Optional: Add logic here if you need to signal completion elsewhere
-                    return;
-                }
-
-                // --- Wait until player and send status are ready ---
-                // Ensure the player object is created AND the media platform is ready to send.
-                // Use timeouts to prevent waiting forever if something goes wrong.
-                var playerReadyTask = this._startAVPlayerCompleted.Task;
-                var sendReadyTask = this._audioSendStatusActive.Task;
-
-                // Wait for both tasks with a timeout (e.g., 5 seconds)
-                var completedTask = await Task.WhenAny(Task.WhenAll(playerReadyTask, sendReadyTask), Task.Delay(5000)).ConfigureAwait(false);
-
-                if (completedTask is Task<Task> || !playerReadyTask.IsCompletedSuccessfully || !sendReadyTask.IsCompletedSuccessfully)
-                {
-                    _logger.LogWarning("[BotMediaStream] Timed out or failed waiting for AV player/send status to be active. Skipping Redis chunk.");
-                    return;
-                }
-
-
-                // Double-check player instance in case shutdown happened between checks
-                if (this._audioVideoFramePlayer == null || this._shutdown == 1)
-                {
-                    _logger.LogWarning("[BotMediaStream] AudioVideoFramePlayer not ready or shutdown initiated after wait. Skipping Redis audio chunk.");
-                    return;
-                }
-                // --- End Readiness Check ---
-
-
-                _logger.LogTrace($"[BotMediaStream] Received Redis Audio Chunk: {audioChunk.Length} bytes on channel {channel}");
-
-                // --- Create AudioMediaBuffer(s) using the Utility method ---
-                long currentTimestamp = GenerateTimestamp();
-
-                // *** Use the utility method from your project to create the buffer list ***
-                // Make sure 'Util.Utilities' is the correct namespace/class containing this method.
-                List<AudioMediaBuffer> buffersToEnqueue = Util.Utilities.CreateAudioMediaBuffers(audioChunk, currentTimestamp, _logger);
-
-                if (buffersToEnqueue == null || !buffersToEnqueue.Any())
-                {
-                    _logger.LogWarning("[BotMediaStream] CreateAudioMediaBuffers returned no buffers for the received chunk.");
-                    return; // Don't try to enqueue nothing
-                }
-
-                // --- Enqueue the buffer(s) for playback ---
-                await this._audioVideoFramePlayer.EnqueueBuffersAsync(buffersToEnqueue, null).ConfigureAwait(false); // Pass null or empty list for video
-                _logger.LogTrace($"[BotMediaStream] Enqueued {buffersToEnqueue.Count} Redis audio buffer(s). Timestamp: {currentTimestamp}");
-
-                // NOTE on Disposal: Assume CreateAudioMediaBuffers provides buffers that
-                // are managed/disposed by the AudioVideoFramePlayer after enqueuing.
-                // If explicit disposal is needed, it would happen *after* the data is sent,
-                // which EnqueueBuffersAsync handles asynchronously. Manual disposal here is risky.
+               
+                // IntPtr unmanagedPointer = Marshal.AllocHGlobal(videoChunk.Length);
+                // var nv12 = this.BGRAtoNV12(unmanagedPointer, 640, 360);
+                // var format = VideoFormatMap[(VideoColorFormat.NV12, 640, 360)];
+                // this.SendVideo(new VideoSendBuffer(nv12, (uint)nv12.Length, format));
+                IntPtr unmanagedPointer = Marshal.AllocHGlobal(videoChunk.Length);
+                Marshal.Copy(videoChunk, 0, unmanagedPointer, videoChunk.Length);
+                var format = VideoFormatMap[(VideoColorFormat.NV12, 640, 360)];
+                this.SendVideo(new VideoSendBuffer(unmanagedPointer, videoChunk.Length, format));
             }
-            catch (ObjectDisposedException)
+            catch (TimeoutException) { _logger.LogWarning("[BotMediaStream] Timed out waiting for player ready in OnRedisVideoReceived."); }
+            catch (ObjectDisposedException) { _logger.LogWarning("[BotMediaStream] Object disposed in OnRedisVideoReceived (likely player or task)."); }
+            catch (OperationCanceledException) { _logger.LogInformation("[BotMediaStream] Operation canceled in OnRedisVideoReceived (likely shutdown)."); }
+            catch (Exception ex)
             {
-                // This is expected if messages arrive during or after shutdown/disposal
-                _logger.LogWarning("[BotMediaStream] Attempted to process Redis audio after object disposal.");
-            }
-            catch (Exception ex) // Catch any other unexpected errors
-            {
-                _logger.LogError(ex, "[BotMediaStream] Error processing audio chunk received from Redis.");
+                _logger.LogError(ex, "[BotMediaStream] Error processing video chunk from Redis.");
             }
         }
 
         /// <summary>
-        /// Generates synchronized timestamps for outgoing audio buffers based on elapsed time.
+        /// Sends a <see cref="VideoMediaBuffer"/> to the call from the Bot's video feed.
         /// </summary>
-        /// <returns>A timestamp in Ticks.</returns>
-        private long GenerateTimestamp()
+        /// <param name="buffer">The video buffer to send.</param>
+        private void SendVideo(VideoMediaBuffer buffer)
         {
-            long currentTimestamp;
-            long nowTicks = DateTime.UtcNow.Ticks;
-
-            if (_lastRedisAudioTimestamp < 0)
+            // Send the video to our outgoing video stream
+            try
             {
-                // First buffer uses current time
-                currentTimestamp = nowTicks;
+                this._mainVideoSocket.Send(buffer);
             }
-            else
+            catch (Exception ex)
             {
-                // Subsequent buffers add the chunk duration to the last timestamp
-                currentTimestamp = _lastRedisAudioTimestamp + (AudioChunkDurationMs * TicksPerMs);
-
-                // Basic drift correction: If the calculated timestamp is significantly
-                // behind the actual current time, reset to 'now' to avoid falling too far behind.
-                // Allow for some buffer (e.g., 100ms)
-                if (nowTicks > currentTimestamp + (100 * TicksPerMs))
-                {
-                    _logger.LogWarning($"[BotMediaStream] Redis audio timestamp drifted significantly ({((nowTicks - currentTimestamp) / TicksPerMs)}ms). Resetting timestamp.");
-                    currentTimestamp = nowTicks;
-                }
-                // Also correct if the calculated timestamp is slightly ahead of now (can happen with timing variations)
-                else if (currentTimestamp > nowTicks)
-                {
-                    // _logger.LogTrace($"[BotMediaStream] Calculated timestamp slightly ahead. Adjusting to now.");
-                    currentTimestamp = nowTicks;
-                }
+                _logger.LogError(ex, $"[OnVideoMediaReceived] Exception while calling mainVideoSocket.Send()");
             }
-            _lastRedisAudioTimestamp = currentTimestamp; // Store for the next calculation
-            return currentTimestamp;
         }
 
-        // Removed OnAudioMediaReceived method entirely
-        // Removed OnSendMediaBuffer method entirely (assuming SpeechService is not used)
-    }
+        /// <summary>
+        /// Convert BGRA image to NV12.
+        /// </summary>
+        /// <param name="data">BGRA data.</param>
+        /// <param name="width">Image width.</param>
+        /// <param name="height">Image height.</param>
+        /// <returns>NV12 encoded bytes.</returns>
+        private unsafe byte[] BGRAtoNV12(IntPtr data, int width, int height)
+        {
+            var bytes = (byte*)data.ToPointer();
+            byte[] result = new byte[(int)(1.5 * (width * height))];
+
+            // https://www.fourcc.org/fccyvrgb.php
+            for (var i = 0; i < width * height; i++)
+            {
+                var p = bytes + (i * 4);
+                var b = *p;
+                var g = *(p + 1);
+                var r = *(p + 2);
+                var y = (byte)Math.Max(0, Math.Min(255, (0.257 * r) + (0.504 * g) + (0.098 * b) + 16));
+                result[i] = y;
+            }
+
+            var stride = width * 4;
+            var uv = width * height;
+            for (var j = 0; j < height; j += 2)
+            {
+                for (var i = 0; i < width; i += 2)
+                {
+                    var p = bytes + (i * 4) + (j * width * 4);
+                    var b = (*p + *(p + 4) + *(p + stride) + *(p + stride + 4)) / 4;
+                    var g = (*(p + 1) + *(p + 5) + *(p + stride + 1) + *(p + stride + 5)) / 4;
+                    var r = (*(p + 2) + *(p + 6) + *(p + stride + 2) + *(p + stride + 6)) / 4;
+                    var u = (byte)Math.Max(0, Math.Min(255, -(0.148 * r) - (0.291 * g) + (0.439 * b) + 128));
+                    var v = (byte)Math.Max(0, Math.Min(255, (0.439 * r) - (0.368 * g) - (0.071 * b) + 128));
+                    result[uv++] = u;
+                    result[uv++] = v;
+                }
+            }
+
+            return result;
+        }
+
+        private async void OnRedisAudioReceived(RedisChannel channel, RedisValue message)
+        {
+            if (this._shutdown == 1) return;
+
+            var player = this._audioVideoFramePlayer; // Local variable
+
+            try
+            {
+                if (!message.HasValue || message.IsNullOrEmpty) return;
+                byte[] audioChunk = (byte[])message;
+                if (audioChunk.Length <= 3 && System.Text.Encoding.UTF8.GetString(audioChunk) == "EOS")
+                {
+                    _logger.LogInformation("[BotMediaStream] Received audio EOS marker.");
+                    return;
+                }
+
+                
+                IntPtr unmanagedPointer = Marshal.AllocHGlobal(audioChunk.Length);
+                Marshal.Copy(audioChunk, 0, unmanagedPointer, audioChunk.Length);
+                this.SendAudio(new AudioSendBuffer(unmanagedPointer, audioChunk.Length, AudioFormat.Pcm16K));
+
+                
+            }
+            catch (TimeoutException) { _logger.LogWarning("[BotMediaStream] Timed out waiting for player ready in OnRedisAudioReceived."); }
+            catch (ObjectDisposedException) { _logger.LogWarning("[BotMediaStream] Object disposed in OnRedisAudioReceived."); }
+            catch (OperationCanceledException) { _logger.LogInformation("[BotMediaStream] Operation canceled in OnRedisAudioReceived."); }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[BotMediaStream] Error processing audio chunk from Redis.");
+            }
+        }
+
+        /// <summary>
+        /// Sends an <see cref="AudioMediaBuffer"/> to the call from the Bot's audio feed.
+        /// </summary>
+        /// <param name="buffer">The audio buffer to send.</param>
+        private void SendAudio(AudioMediaBuffer buffer)
+        {
+            // Send the audio to our outgoing video stream
+            try
+            {
+                this._audioSocket.Send(buffer);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"[OnAudioReceived] Exception while calling audioSocket.Send()");
+            }
+        }
+
+
+        // --- Other Methods (OnVideoKeyFrameNeeded, GenerateTimestamp) ---
+
+        private void OnVideoKeyFrameNeeded(object? sender, VideoKeyFrameNeededEventArgs e)
+        {
+            _logger.LogInformation($"[VideoKeyFrameNeeded(MediaType={e.MediaType}; SocketId={e.SocketId}; Formats={string.Join(";", e.VideoFormats.Select(vf => vf.VideoColorFormat))})]");
+            // No action needed typically for playback, but log is useful.
+        }
+        
+    }    
 }

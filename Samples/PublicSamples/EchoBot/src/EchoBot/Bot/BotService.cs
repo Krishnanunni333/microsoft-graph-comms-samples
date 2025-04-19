@@ -83,6 +83,17 @@ namespace EchoBot.Bot
         }
 
         /// <summary>
+        /// Stores a list of supported video formats.
+        /// </summary>
+        public static readonly List<VideoFormat> SupportedSendVideoFormats = new List<VideoFormat>
+        {
+            //VideoFormat.H264_1280x720_30Fps,
+            //VideoFormat.H264_640x360_30Fps,
+            //VideoFormat.H264_320x180_15Fps,
+           VideoFormat.NV12_640x360_15Fps
+        };
+
+        /// <summary>
         /// Initializes a new instance of the <see cref="BotService" /> class.
         /// </summary>
         /// <param name="graphLogger"></param>
@@ -247,7 +258,8 @@ namespace EchoBot.Bot
                     },
                     new VideoSocketSettings
                     {
-                        StreamDirections = StreamDirection.Inactive
+                        StreamDirections = StreamDirection.Sendonly,
+                        SupportedSendVideoFormats = SupportedSendVideoFormats
                     },
                     mediaSessionId: mediaSessionId);
             }
