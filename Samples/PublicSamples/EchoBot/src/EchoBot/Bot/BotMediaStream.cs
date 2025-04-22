@@ -13,18 +13,18 @@
 // <summary>The bot media stream modified to play audio and video from Redis.</summary>
 // ***********************************************************************-
 using EchoBot.Util;
-using EchoBot.Media; 
+using EchoBot.Media;
 using Microsoft.Graph.Communications.Calls;
 using Microsoft.Graph.Communications.Calls.Media;
 using Microsoft.Graph.Communications.Common;
 using Microsoft.Graph.Communications.Common.Telemetry;
-using Microsoft.Skype.Bots.Media; 
+using Microsoft.Skype.Bots.Media;
 using StackExchange.Redis;
-using System; 
-using System.Collections.Generic; 
+using System;
+using System.Collections.Generic;
 using System.Linq;
-using System.Threading; 
-using System.Threading.Tasks; 
+using System.Threading;
+using System.Threading.Tasks;
 
 // Ensure you have a using directive for your logger implementation (e.g., Microsoft.Extensions.Logging)
 using Microsoft.Extensions.Logging;
@@ -76,6 +76,7 @@ namespace EchoBot.Bot
         private ISubscriber _redisSubscriber;
         private const string RedisAudioChannelName = "audio_stream";
         private const string RedisVideoChannelName = "video_stream";
+        private const string RedisAudioPushChannelName = "audio_push_stream";
         private long _lastRedisAudioTimestamp = -1;
         private const long TicksPerMs = TimeSpan.TicksPerMillisecond;
         private const int AudioChunkDurationMs = 20;
@@ -118,6 +119,7 @@ namespace EchoBot.Bot
                 throw new InvalidOperationException("A mediaSession needs to have at least an audioSocket to send audio.");
             }
             this._audioSocket.AudioSendStatusChanged += OnAudioSendStatusChanged;
+            this._audioSocket.AudioMediaReceived += OnAudioMediaReceived;
 
 
             this._mainVideoSocket = mediaSession.VideoSockets?.FirstOrDefault();
@@ -127,7 +129,7 @@ namespace EchoBot.Bot
                 this._mainVideoSocket.VideoSendStatusChanged += this.OnVideoSendStatusChanged;
                 this._mainVideoSocket.VideoKeyFrameNeeded += this.OnVideoKeyFrameNeeded;
             }
-           
+
             InitializeRedis();
         }
 
@@ -149,6 +151,7 @@ namespace EchoBot.Bot
                     // Use ConfigureAwait(false) to avoid deadlocks in certain contexts
                     await _redisSubscriber.UnsubscribeAsync(RedisAudioChannelName).ConfigureAwait(false);
                     await _redisSubscriber.UnsubscribeAsync(RedisVideoChannelName).ConfigureAwait(false);
+                    await _redisSubscriber.UnsubscribeAsync(RedisAudioPushChannelName).ConfigureAwait(false);
                     _redisSubscriber = null; // Release the reference
                 }
                 catch (Exception ex)
@@ -178,6 +181,7 @@ namespace EchoBot.Bot
             if (this._audioSocket != null)
             {
                 this._audioSocket.AudioSendStatusChanged -= this.OnAudioSendStatusChanged;
+                this._audioSocket.AudioMediaReceived -= this.OnAudioMediaReceived;
             }
 
             // Unsubscribe from the video socket event
@@ -214,7 +218,7 @@ namespace EchoBot.Bot
 
         }
 
-        
+
 
         /// <summary>
         /// Handles changes in the audio send status from the media platform.
@@ -279,15 +283,18 @@ namespace EchoBot.Bot
                 _redisConnection = ConnectionMultiplexer.Connect(options);
 
                 // Log connection events for debugging
-                _redisConnection.ConnectionFailed += (sender, args) => {
+                _redisConnection.ConnectionFailed += (sender, args) =>
+                {
                     _logger.LogError($"[BotMediaStream] Redis connection failed: {args.FailureType}, Endpoint: {args.EndPoint}, Exception: {args.Exception?.Message}");
                 };
-                _redisConnection.ConnectionRestored += (sender, args) => {
+                _redisConnection.ConnectionRestored += (sender, args) =>
+                {
                     _logger.LogInformation($"[BotMediaStream] Redis connection restored: {args.FailureType}, Endpoint: {args.EndPoint}");
                     // Re-subscribe when connection is restored
                     SubscribeToChannels();
                 };
-                _redisConnection.ErrorMessage += (sender, args) => {
+                _redisConnection.ErrorMessage += (sender, args) =>
+                {
                     _logger.LogError($"[BotMediaStream] Redis error message: {args.Message}");
                 };
 
@@ -324,7 +331,7 @@ namespace EchoBot.Bot
                 return;
             }
 
-                try
+            try
             {
                 _redisSubscriber = _redisConnection.GetSubscriber();
 
@@ -358,7 +365,7 @@ namespace EchoBot.Bot
                     _logger.LogInformation("[BotMediaStream] Received video EOS marker.");
                     return;
                 }
-               
+
                 // IntPtr unmanagedPointer = Marshal.AllocHGlobal(videoChunk.Length);
                 // var nv12 = this.BGRAtoNV12(unmanagedPointer, 640, 360);
                 // var format = VideoFormatMap[(VideoColorFormat.NV12, 640, 360)];
@@ -394,55 +401,9 @@ namespace EchoBot.Bot
             }
         }
 
-        /// <summary>
-        /// Convert BGRA image to NV12.
-        /// </summary>
-        /// <param name="data">BGRA data.</param>
-        /// <param name="width">Image width.</param>
-        /// <param name="height">Image height.</param>
-        /// <returns>NV12 encoded bytes.</returns>
-        private unsafe byte[] BGRAtoNV12(IntPtr data, int width, int height)
-        {
-            var bytes = (byte*)data.ToPointer();
-            byte[] result = new byte[(int)(1.5 * (width * height))];
-
-            // https://www.fourcc.org/fccyvrgb.php
-            for (var i = 0; i < width * height; i++)
-            {
-                var p = bytes + (i * 4);
-                var b = *p;
-                var g = *(p + 1);
-                var r = *(p + 2);
-                var y = (byte)Math.Max(0, Math.Min(255, (0.257 * r) + (0.504 * g) + (0.098 * b) + 16));
-                result[i] = y;
-            }
-
-            var stride = width * 4;
-            var uv = width * height;
-            for (var j = 0; j < height; j += 2)
-            {
-                for (var i = 0; i < width; i += 2)
-                {
-                    var p = bytes + (i * 4) + (j * width * 4);
-                    var b = (*p + *(p + 4) + *(p + stride) + *(p + stride + 4)) / 4;
-                    var g = (*(p + 1) + *(p + 5) + *(p + stride + 1) + *(p + stride + 5)) / 4;
-                    var r = (*(p + 2) + *(p + 6) + *(p + stride + 2) + *(p + stride + 6)) / 4;
-                    var u = (byte)Math.Max(0, Math.Min(255, -(0.148 * r) - (0.291 * g) + (0.439 * b) + 128));
-                    var v = (byte)Math.Max(0, Math.Min(255, (0.439 * r) - (0.368 * g) - (0.071 * b) + 128));
-                    result[uv++] = u;
-                    result[uv++] = v;
-                }
-            }
-
-            return result;
-        }
-
         private async void OnRedisAudioReceived(RedisChannel channel, RedisValue message)
         {
             if (this._shutdown == 1) return;
-
-            var player = this._audioVideoFramePlayer; // Local variable
-
             try
             {
                 if (!message.HasValue || message.IsNullOrEmpty) return;
@@ -453,12 +414,12 @@ namespace EchoBot.Bot
                     return;
                 }
 
-                
+
                 IntPtr unmanagedPointer = Marshal.AllocHGlobal(audioChunk.Length);
                 Marshal.Copy(audioChunk, 0, unmanagedPointer, audioChunk.Length);
                 this.SendAudio(new AudioSendBuffer(unmanagedPointer, audioChunk.Length, AudioFormat.Pcm16K));
 
-                
+
             }
             catch (TimeoutException) { _logger.LogWarning("[BotMediaStream] Timed out waiting for player ready in OnRedisAudioReceived."); }
             catch (ObjectDisposedException) { _logger.LogWarning("[BotMediaStream] Object disposed in OnRedisAudioReceived."); }
@@ -466,6 +427,56 @@ namespace EchoBot.Bot
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[BotMediaStream] Error processing audio chunk from Redis.");
+            }
+        }
+
+        /// <summary>
+        /// Handles audio received FROM Teams participants. ***
+        /// Copies the audio data and publishes it to the Redis push channel.
+        /// </summary>
+        private void OnAudioMediaReceived(object? sender, AudioMediaReceivedEventArgs e)
+        {
+            // Immediately dispose buffer if shutting down or no Redis connection
+            if (_shutdown == 1) { e.Buffer.Dispose(); return; }
+
+            ISubscriber? subscriber = _redisSubscriber;
+            if (subscriber == null || _redisConnection == null || !_redisConnection.IsConnected)
+            {
+                _logger.LogWarning("[BotMediaStream::OnAudioMediaReceived] Skipping received audio frame: Redis connection or subscriber is not available/ready.");
+                e.Buffer.Dispose();
+                return;
+            }
+
+            try
+            {
+                var bufferLength = e.Buffer.Length;
+                if (bufferLength <= 0)
+                {
+                    e.Buffer.Dispose();
+                    return;
+                }
+
+
+                var buffer = new byte[bufferLength];
+
+                Marshal.Copy(e.Buffer.Data, buffer, 0, (int)bufferLength);
+
+
+                long clientsReceived = subscriber.Publish(RedisAudioPushChannelName, buffer, CommandFlags.FireAndForget);
+                _logger.LogTrace($"[BotMediaStream::OnAudioMediaReceived] Received {bufferLength} audio bytes from Teams. Published to {clientsReceived} subscribers on '{RedisAudioPushChannelName}'.");
+            }
+            catch (ObjectDisposedException odEx)
+            {
+                _logger.LogWarning(odEx, "[BotMediaStream::OnAudioMediaReceived] Object disposed exception (likely Redis subscriber during publish).");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[BotMediaStream::OnAudioMediaReceived] Error processing or publishing received audio chunk from Teams.");
+            }
+            finally
+            {
+                // **CRITICAL:** Always dispose the buffer provided by the event args
+                e.Buffer.Dispose();
             }
         }
 
@@ -494,6 +505,6 @@ namespace EchoBot.Bot
             _logger.LogInformation($"[VideoKeyFrameNeeded(MediaType={e.MediaType}; SocketId={e.SocketId}; Formats={string.Join(";", e.VideoFormats.Select(vf => vf.VideoColorFormat))})]");
             // No action needed typically for playback, but log is useful.
         }
-        
-    }    
+
+    }
 }
