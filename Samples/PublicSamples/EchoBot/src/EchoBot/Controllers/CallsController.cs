@@ -16,6 +16,7 @@ using EchoBot.Constants;
 using EchoBot.Models;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
+using Microsoft.Graph.Models;
 using System.Net;
 
 namespace EchoBot.Controllers
@@ -49,6 +50,16 @@ namespace EchoBot.Controllers
             {
                 _logger.LogInformation("JOIN CALL");
                 var call = await _botService.JoinCallAsync(joinCallBody).ConfigureAwait(false);
+                TimeSpan delayBetweenAttempts = TimeSpan.FromSeconds(10);
+
+                var userId = "";
+                await call.Participants.InviteAsync(new List<InvitationParticipantInfo> {
+                            new InvitationParticipantInfo {
+                                Identity = new IdentitySet {
+                                    User = new Identity { Id = userId }
+                                }
+                            }
+                        });
 
                 var values = new
                 {
