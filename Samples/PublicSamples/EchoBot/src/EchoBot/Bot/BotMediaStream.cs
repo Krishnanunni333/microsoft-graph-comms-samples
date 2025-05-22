@@ -65,8 +65,6 @@ namespace EchoBot.Bot
         private AudioVideoFramePlayer _audioVideoFramePlayer;
         private readonly TaskCompletionSource<bool> _audioSendStatusActive;
         private readonly TaskCompletionSource<bool> _videoSendStatusActive;
-        private readonly TaskCompletionSource<bool> _startAVPlayerCompleted;
-        private AudioVideoFramePlayerSettings _audioVideoFramePlayerSettings;
         private int _shutdown;
         private List<AudioMediaBuffer> _audioMediaBuffers = new List<AudioMediaBuffer>();
         private List<VideoMediaBuffer> _videoMediaBuffers = new List<VideoMediaBuffer>();
@@ -77,13 +75,8 @@ namespace EchoBot.Bot
         private const string RedisAudioChannelName = "audio_stream";
         private const string RedisVideoChannelName = "video_stream";
         private const string RedisAudioPushChannelName = "audio_push_stream";
-        private long _lastRedisAudioTimestamp = -1;
-        private const long TicksPerMs = TimeSpan.TicksPerMillisecond;
-        private const int AudioChunkDurationMs = 20;
-        private long audioTick;
-        private long videoTick;
-        private long mediaTick;
-        private readonly object mLock = new object();
+        private const string RedisSTTChannelName = "stt_stream";
+        private readonly SpeechService _languageService;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="BotMediaStream" /> class.
@@ -107,7 +100,6 @@ namespace EchoBot.Bot
             // Use RunContinuationsAsynchronously for TaskCompletionSource
             _audioSendStatusActive = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             _videoSendStatusActive = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            _startAVPlayerCompleted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
             // Initialize participants list (if needed)
             this.participants = new List<IParticipant>();
@@ -128,6 +120,13 @@ namespace EchoBot.Bot
                 _logger.LogInformation("Video socket found. Subscribing to video events.");
                 this._mainVideoSocket.VideoSendStatusChanged += this.OnVideoSendStatusChanged;
                 this._mainVideoSocket.VideoKeyFrameNeeded += this.OnVideoKeyFrameNeeded;
+            }
+
+            if (_settings.UseSpeechService)
+            {
+                _languageService = new SpeechService(_settings, _logger);
+                //_languageService.SendMediaBuffer += this.OnSendMediaBuffer;
+                _languageService.SpeechRecognized += this.OnSpeechToTextDone;
             }
 
             InitializeRedis();
@@ -434,7 +433,7 @@ namespace EchoBot.Bot
         /// Handles audio received FROM Teams participants. ***
         /// Copies the audio data and publishes it to the Redis push channel.
         /// </summary>
-        private void OnAudioMediaReceived(object? sender, AudioMediaReceivedEventArgs e)
+        private async void OnAudioMediaReceived(object? sender, AudioMediaReceivedEventArgs e)
         {
             // Immediately dispose buffer if shutting down or no Redis connection
             if (_shutdown == 1) { e.Buffer.Dispose(); return; }
@@ -449,21 +448,32 @@ namespace EchoBot.Bot
 
             try
             {
-                var bufferLength = e.Buffer.Length;
-                if (bufferLength <= 0)
+                if (_languageService != null)
                 {
+                    // send audio buffer to language service for processing
+                    // the particpant talking will hear the bot repeat what they said
+                    await _languageService.AppendAudioBuffer(e.Buffer);
                     e.Buffer.Dispose();
-                    return;
                 }
+                else
+                {
+                    var bufferLength = e.Buffer.Length;
+                    if (bufferLength <= 0)
+                    {
+                        e.Buffer.Dispose();
+                        return;
+                    }
 
 
-                var buffer = new byte[bufferLength];
+                    var buffer = new byte[bufferLength];
 
-                Marshal.Copy(e.Buffer.Data, buffer, 0, (int)bufferLength);
+                    Marshal.Copy(e.Buffer.Data, buffer, 0, (int)bufferLength);
 
 
-                long clientsReceived = subscriber.Publish(RedisAudioPushChannelName, buffer, CommandFlags.FireAndForget);
-                _logger.LogTrace($"[BotMediaStream::OnAudioMediaReceived] Received {bufferLength} audio bytes from Teams. Published to {clientsReceived} subscribers on '{RedisAudioPushChannelName}'.");
+                    long clientsReceived = subscriber.Publish(RedisAudioPushChannelName, buffer, CommandFlags.FireAndForget);
+                    _logger.LogTrace($"[BotMediaStream::OnAudioMediaReceived] Received {bufferLength} audio bytes from Teams. Published to {clientsReceived} subscribers on '{RedisAudioPushChannelName}'.");
+                }
+               
             }
             catch (ObjectDisposedException odEx)
             {
@@ -479,6 +489,28 @@ namespace EchoBot.Bot
                 e.Buffer.Dispose();
             }
         }
+
+        private void OnSpeechToTextDone(object? sender, string recognizedText)
+        {
+            if (_redisSubscriber != null && _redisConnection?.IsConnected == true)
+            {
+                try
+                {
+                    // await _redisSubscriber.PublishAsync("speech:recognized:text", recognizedText);
+                    long clientsReceived = _redisSubscriber.Publish(RedisSTTChannelName, recognizedText, CommandFlags.FireAndForget);
+                    _logger.LogTrace($"[BotMediaStream::OnSpeechToTextDone] Received {recognizedText.Length} text from Teams. Published to {clientsReceived} subscribers on '{RedisSTTChannelName}'.");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to publish recognized speech to Redis.");
+                }
+            }
+            else
+            {
+                _logger.LogWarning("Redis not connected. Skipping recognized speech publish.");
+            }
+        }
+
 
         /// <summary>
         /// Sends an <see cref="AudioMediaBuffer"/> to the call from the Bot's audio feed.

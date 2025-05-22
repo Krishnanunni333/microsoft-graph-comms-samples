@@ -2,6 +2,7 @@
 using Microsoft.CognitiveServices.Speech.Audio;
 using Microsoft.Skype.Bots.Media;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 
 namespace EchoBot.Media
 {
@@ -83,6 +84,8 @@ namespace EchoBot.Media
         }
 
         public event EventHandler<MediaStreamEventArgs> SendMediaBuffer;
+        public event EventHandler<string>? SpeechRecognized;
+
 
         /// <summary>
         /// Ends this instance.
@@ -151,9 +154,10 @@ namespace EchoBot.Media
                             return;
 
                         _logger.LogInformation($"RECOGNIZED: Text={e.Result.Text}");
+                        SpeechRecognized?.Invoke(this, e.Result.Text);
                         // We recognized the speech
                         // Now do Speech to Text
-                        await TextToSpeech(e.Result.Text);
+                        // await TextToSpeech(e.Result.Text);
                     }
                     else if (e.Result.Reason == ResultReason.NoMatch)
                     {
